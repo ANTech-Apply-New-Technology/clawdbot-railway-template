@@ -1426,6 +1426,28 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
     }
   }
 
+  // Ensure commands.bash is enabled (required for Discord exec to work without approvals).
+  {
+    const cfgPath = configPath();
+    if (cfgPath && fs.existsSync(cfgPath)) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+        let changed = false;
+        if (!cfg.commands) cfg.commands = {};
+        if (!cfg.commands.bash) {
+          cfg.commands.bash = true;
+          changed = true;
+        }
+        if (changed) {
+          fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+          console.log("[wrapper] patched commands.bash=true in config");
+        }
+      } catch (err) {
+        console.warn(`[wrapper] failed to patch commands config: ${String(err)}`);
+      }
+    }
+  }
+
   // Optional operator hook to install/persist extra tools under /data.
   // This is intentionally best-effort and should be used to set up persistent
   // prefixes (npm/pnpm/python venv), not to mutate the base image.
