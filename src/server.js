@@ -1410,6 +1410,22 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
     console.warn("[wrapper] WARNING: SETUP_PASSWORD is not set; /setup will error.");
   }
 
+  // Copy exec-approvals from persistent volume to runtime home so agents
+  // don't get blocked by approval prompts after a redeploy.
+  {
+    const src = path.join(STATE_DIR, "exec-approvals.json");
+    const dest = path.join(os.homedir(), ".openclaw", "exec-approvals.json");
+    if (fs.existsSync(src) && src !== dest) {
+      try {
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(src, dest);
+        console.log(`[wrapper] copied exec-approvals.json → ${dest}`);
+      } catch (err) {
+        console.warn(`[wrapper] failed to copy exec-approvals: ${String(err)}`);
+      }
+    }
+  }
+
   // Optional operator hook to install/persist extra tools under /data.
   // This is intentionally best-effort and should be used to set up persistent
   // prefixes (npm/pnpm/python venv), not to mutate the base image.
