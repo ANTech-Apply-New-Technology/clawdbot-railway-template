@@ -49,6 +49,7 @@ RUN apt-get update \
     tini \
     python3 \
     python3-venv \
+    jq \
   && rm -rf /var/lib/apt/lists/*
 
 # `openclaw update` expects pnpm. Provide it in the runtime image.
@@ -73,7 +74,8 @@ RUN npm install --omit=dev && npm cache clean --force
 COPY --from=openclaw-build /openclaw /openclaw
 
 # Provide an openclaw executable
-RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"' > /usr/local/bin/openclaw \
+RUN printf '%s
+' '#!/usr/bin/env bash' 'exec node /openclaw/dist/entry.js "$@"' > /usr/local/bin/openclaw \
   && chmod +x /usr/local/bin/openclaw
 
 COPY src ./src
