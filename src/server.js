@@ -142,6 +142,7 @@ let lastGatewayError = null;
 let lastGatewayExit = null;
 let lastDoctorOutput = null;
 let lastDoctorAt = null;
+let lastGatewayFailAt = null;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -233,6 +234,10 @@ async function runDoctorBestEffort() {
 async function ensureGatewayRunning() {
   if (!isConfigured()) return { ok: false, reason: "not configured" };
   if (gatewayProc) return { ok: true };
+  // Cooldown: don't retry for 15s after a failure to prevent request-stampede crash loops.
+  if (lastGatewayFailAt && Date.now() - lastGatewayFailAt < 15_000) {
+    return { ok: false, reason: "cooling down after recent failure" };
+  }
   if (!gatewayStarting) {
     gatewayStarting = (async () => {
       try {
@@ -245,6 +250,7 @@ async function ensureGatewayRunning() {
       } catch (err) {
         const msg = `[gateway] start failure: ${String(err)}`;
         lastGatewayError = msg;
+        lastGatewayFailAt = Date.now();
         // Collect extra diagnostics to help users file issues.
         await runDoctorBestEffort();
         throw err;
@@ -259,14 +265,28 @@ async function ensureGatewayRunning() {
 
 async function restartGateway() {
   if (gatewayProc) {
+    const proc = gatewayProc;
     try {
-      gatewayProc.kill("SIGTERM");
+      proc.kill("SIGTERM");
     } catch {
       // ignore
     }
-    // Give it a moment to exit and release the port.
-    await sleep(750);
+    // Wait for the process to actually exit (up to 10s) before starting a new one.
+    // The old 750ms sleep was too short — the process often hadn't released the port yet.
+    await new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch {}
+        resolve();
+      }, 10_000);
+      proc.on("exit", () => { clearTimeout(timeout); resolve(); });
+    });
     gatewayProc = null;
+    // Verify the port is free before attempting restart (retry up to 5s).
+    for (let i = 0; i < 10; i++) {
+      const busy = await probeGateway();
+      if (!busy) break;
+      await sleep(500);
+    }
   }
   return ensureGatewayRunning();
 }
