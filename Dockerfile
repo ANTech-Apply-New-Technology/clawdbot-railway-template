@@ -101,7 +101,7 @@ COPY --from=openclaw-build /openclaw /openclaw
 # Install Chromium via Playwright (uses the playwright-core bundled with OpenClaw)
 # This bakes the browser into the image so it survives redeploys.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
-RUN node /openclaw/node_modules/.pnpm/playwright-core@*/node_modules/playwright-core/cli.js install chromium \
+RUN npx --yes playwright install chromium \
   && chmod -R o+rx /opt/ms-playwright
 
 # Provide an openclaw executable
