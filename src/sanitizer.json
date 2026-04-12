@@ -1,0 +1,28 @@
+{
+  "secret_patterns": [
+    {"pattern": "sk-[A-Za-z0-9_-]{10,}", "replacement": "[REDACTED]"},
+    {"pattern": "gho_[A-Za-z0-9_]{10,}", "replacement": "[REDACTED]"},
+    {"pattern": "ghp_[A-Za-z0-9_]{10,}", "replacement": "[REDACTED]"},
+    {"pattern": "xox[baprs]-[A-Za-z0-9-]{10,}", "replacement": "[REDACTED]"},
+    {"pattern": "\\d{5,}:[A-Za-z0-9_-]{10,}", "replacement": "[REDACTED]"},
+    {"pattern": "AA[A-Za-z0-9_-]{10,}:\\S{10,}", "replacement": "[REDACTED]"},
+    {"pattern": "ant_[A-Za-z0-9_-]{10,}", "replacement": "[REDACTED]"}
+  ],
+  "blocked_patterns": [
+    {"pattern": "(?<![/.])\\b[Oo]pen\\s*[Cc]law\\b(?!/)", "replacement": ""},
+    {"pattern": "\\b[Oo]pen\\s*[Cc]laude?\\b", "replacement": ""},
+    {"pattern": "\\blossless[\\s-]?claw\\b", "replacement": "context manager", "flags": "i"},
+    {"pattern": "https?://clawhub\\.\\w+", "replacement": ""},
+    {"pattern": "\\bclawhub\\b", "replacement": "", "flags": "i"},
+    {"pattern": "<!--\\s*OPENCLAW_CACHE_BOUNDARY\\s*-->", "replacement": ""},
+    {"pattern": "\\bclaude[\\s-]?max[\\s-]?proxy\\b", "replacement": "", "flags": "i"},
+    {"pattern": "\\bclawd\\b", "replacement": "", "flags": "i"},
+    {"pattern": "\\bflawd[\\s-]?bot\\b", "replacement": "", "flags": "i"},
+    {"pattern": "(?<![a-zA-Z])[Cc]law(?![a-zA-Z])", "replacement": ""},
+    {"pattern": "third[\\s-]?party\\s+(?:app|proxy|client|tool)", "replacement": "application", "flags": "i"}
+  ],
+  "injection_patterns": [
+    {"pattern": "\\n\\n(?:Human|Assistant):", "replacement": "\n\n", "flags": "i"},
+    {"pattern": "</?(?:system|function_results|function_calls|tool_results|result|scratchpad)>", "replacement": "", "flags": "i"}
+  ]
+}

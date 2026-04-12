@@ -516,10 +516,11 @@ app.get("/setup", requireSetupAuth, (_req, res) => {
     <label>Base URL (must include /v1, e.g. http://host:11434/v1)</label>
     <input id="customProviderBaseUrl" placeholder="http://127.0.0.1:11434/v1" />
 
-    <label>API (openai-completions or openai-responses)</label>
+    <label>API format</label>
     <select id="customProviderApi">
       <option value="openai-completions">openai-completions</option>
       <option value="openai-responses">openai-responses</option>
+      <option value="anthropic-messages">anthropic-messages</option>
     </select>
 
     <label>API key env var name (optional, e.g. OLLAMA_API_KEY). Leave blank for no key.</label>
@@ -595,6 +596,9 @@ const AUTH_GROUPS = [
   ]},
   { value: "opencode-zen", label: "OpenCode Zen", hint: "API key", options: [
     { value: "opencode-zen", label: "OpenCode Zen (multi-model proxy)" }
+  ]},
+  { value: "ant-proxy", label: "ANT-Proxy", hint: "Multi-model proxy (Claude + Codex)", options: [
+    { value: "ant-proxy-key", label: "ANT-Proxy API key" }
   ]}
 ];
 
@@ -639,42 +643,51 @@ function buildOnboardArgs(payload) {
   ];
 
   if (payload.authChoice) {
-    args.push("--auth-choice", payload.authChoice);
-
-    // Map secret to correct flag for common choices.
     const secret = (payload.authSecret || "").trim();
-    const map = {
-      "openai-api-key": "--openai-api-key",
-      "apiKey": "--anthropic-api-key",
-      "openrouter-api-key": "--openrouter-api-key",
-      "ai-gateway-api-key": "--ai-gateway-api-key",
-      "moonshot-api-key": "--moonshot-api-key",
-      "kimi-code-api-key": "--kimi-code-api-key",
-      "gemini-api-key": "--gemini-api-key",
-      "zai-api-key": "--zai-api-key",
-      "minimax-api": "--minimax-api-key",
-      "minimax-api-lightning": "--minimax-api-key",
-      "synthetic-api-key": "--synthetic-api-key",
-      "opencode-zen": "--opencode-zen-api-key",
-    };
 
-    const flag = map[payload.authChoice];
+    // ANT-Proxy: translate to apiKey auth for onboarding, then configure the custom
+    // provider post-onboard. --skip-health prevents key validation against upstream.
+    if (payload.authChoice === "ant-proxy-key") {
+      if (!secret) throw new Error("Missing ANT-Proxy API key");
+      const proxyUrl = (process.env.ANT_PROXY_URL || "").trim();
+      if (!proxyUrl) throw new Error("ANT_PROXY_URL environment variable is required for ANT-Proxy setup");
+      if (!/^https?:\/\//.test(proxyUrl)) throw new Error("ANT_PROXY_URL must start with http:// or https://");
+      args.push("--auth-choice", "apiKey");
+      args.push("--anthropic-api-key", secret);
+    } else {
+      args.push("--auth-choice", payload.authChoice);
 
-    // If the user picked an API-key auth choice but didn't provide a secret, fail fast.
-    // Otherwise OpenClaw may fall back to its default auth choice, which looks like the
-    // wizard "reverted" their selection.
-    if (flag && !secret) {
-      throw new Error(`Missing auth secret for authChoice=${payload.authChoice}`);
-    }
+      // Map secret to correct flag for common choices.
+      const map = {
+        "openai-api-key": "--openai-api-key",
+        "apiKey": "--anthropic-api-key",
+        "openrouter-api-key": "--openrouter-api-key",
+        "ai-gateway-api-key": "--ai-gateway-api-key",
+        "moonshot-api-key": "--moonshot-api-key",
+        "kimi-code-api-key": "--kimi-code-api-key",
+        "gemini-api-key": "--gemini-api-key",
+        "zai-api-key": "--zai-api-key",
+        "minimax-api": "--minimax-api-key",
+        "minimax-api-lightning": "--minimax-api-key",
+        "synthetic-api-key": "--synthetic-api-key",
+        "opencode-zen": "--opencode-zen-api-key",
+      };
 
-    if (flag) {
-      args.push(flag, secret);
-    }
+      const flag = map[payload.authChoice];
 
-    if (payload.authChoice === "token") {
-      // This is the Anthropic setup-token flow.
-      if (!secret) throw new Error("Missing auth secret for authChoice=token");
-      args.push("--token-provider", "anthropic", "--token", secret);
+      // If the user picked an API-key auth choice but didn't provide a secret, fail fast.
+      if (flag && !secret) {
+        throw new Error(`Missing auth secret for authChoice=${payload.authChoice}`);
+      }
+
+      if (flag) {
+        args.push(flag, secret);
+      }
+
+      if (payload.authChoice === "token") {
+        if (!secret) throw new Error("Missing auth secret for authChoice=token");
+        args.push("--token-provider", "anthropic", "--token", secret);
+      }
     }
   }
 
@@ -775,6 +788,41 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       clawArgs(["config", "set", "--json", "gateway.trustedProxies", JSON.stringify(["127.0.0.1"]) ]),
     );
 
+    // ANT-Proxy: configure as a custom provider so OpenClaw routes API calls through the proxy.
+    // Routes through /v1/chat/completions (OpenAI format); ANT-Proxy handles model-based routing
+    // internally (claude-* → Anthropic, gpt-*/o*/codex* → OpenAI).
+    if (payload.authChoice === "ant-proxy-key") {
+      const proxyUrl = (process.env.ANT_PROXY_URL || "").trim();
+      const proxyKey = (payload.authSecret || "").trim();
+      if (proxyUrl && proxyKey) {
+        const baseUrl = proxyUrl.replace(/\/+$/, "") + "/v1";
+        const providerCfg = {
+          baseUrl,
+          api: "openai-completions",
+          apiKey: "${ANT_PROXY_API_KEY}",
+          models: [
+            { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
+            { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
+            { id: "o4-mini", name: "OpenAI o4-mini" },
+            { id: "gpt-4.1", name: "GPT-4.1" },
+            { id: "codex-mini-latest", name: "Codex Mini" },
+          ],
+        };
+
+        // The config references ${ANT_PROXY_API_KEY} which OpenClaw resolves at runtime.
+        // The user MUST also set ANT_PROXY_API_KEY as a Railway environment variable so it
+        // survives container restarts. This in-memory assignment ensures the current run works.
+        process.env.ANT_PROXY_API_KEY = proxyKey;
+
+        await runCmd(OPENCLAW_NODE, clawArgs(["config", "set", "models.mode", "merge"]));
+        const set = await runCmd(
+          OPENCLAW_NODE,
+          clawArgs(["config", "set", "--json", "models.providers.ant-proxy", JSON.stringify(providerCfg)]),
+        );
+        extra += `\n[ant-proxy] exit=${set.code}\n${set.output || "(no output)"}`;
+      }
+    }
+
     // Optional: configure a custom OpenAI-compatible provider (base URL) for advanced users.
     if (payload.customProviderId?.trim() && payload.customProviderBaseUrl?.trim()) {
       const providerId = payload.customProviderId.trim();
@@ -787,8 +835,8 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
         extra += `\n[custom provider] skipped: invalid provider id (use letters/numbers/_/-)`;
       } else if (!/^https?:\/\//.test(baseUrl)) {
         extra += `\n[custom provider] skipped: baseUrl must start with http(s)://`;
-      } else if (api !== "openai-completions" && api !== "openai-responses") {
-        extra += `\n[custom provider] skipped: api must be openai-completions or openai-responses`;
+      } else if (api !== "openai-completions" && api !== "openai-responses" && api !== "anthropic-messages") {
+        extra += `\n[custom provider] skipped: api must be openai-completions, openai-responses, or anthropic-messages`;
       } else if (apiKeyEnv && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(apiKeyEnv)) {
         extra += `\n[custom provider] skipped: invalid api key env var name`;
       } else {
@@ -964,16 +1012,37 @@ app.get("/setup/api/debug", requireSetupAuth, async (_req, res) => {
 
 // --- Debug console (Option A: allowlisted commands + config editor) ---
 
+// Sanitizer: load patterns from JSON config for secret redaction and blocked content.
+const SANITIZER_CONFIG = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "sanitizer.json"), "utf8"));
+
+const SECRET_PATTERNS = (SANITIZER_CONFIG.secret_patterns || []).map((p) => ({
+  re: new RegExp(p.pattern, "g"),
+  replacement: p.replacement || "[REDACTED]",
+}));
+
+const BLOCKED_PATTERNS = (SANITIZER_CONFIG.blocked_patterns || []).map((p) => ({
+  re: new RegExp(p.pattern, (p.flags || "") + (p.flags?.includes("g") ? "" : "g")),
+  replacement: p.replacement ?? "",
+}));
+
 function redactSecrets(text) {
   if (!text) return text;
-  // Very small best-effort redaction. (Config paths/values may still contain secrets.)
-  return String(text)
-    .replace(/(sk-[A-Za-z0-9_-]{10,})/g, "[REDACTED]")
-    .replace(/(gho_[A-Za-z0-9_]{10,})/g, "[REDACTED]")
-    .replace(/(xox[baprs]-[A-Za-z0-9-]{10,})/g, "[REDACTED]")
-    // Telegram bot tokens look like: 123456:ABCDEF...
-    .replace(/(\d{5,}:[A-Za-z0-9_-]{10,})/g, "[REDACTED]")
-    .replace(/(AA[A-Za-z0-9_-]{10,}:\S{10,})/g, "[REDACTED]");
+  let out = String(text);
+  for (const { re, replacement } of SECRET_PATTERNS) {
+    re.lastIndex = 0;
+    out = out.replace(re, replacement);
+  }
+  return out;
+}
+
+function sanitizeOutput(text) {
+  if (!text) return text;
+  let out = redactSecrets(text);
+  for (const { re, replacement } of BLOCKED_PATTERNS) {
+    re.lastIndex = 0;
+    out = out.replace(re, replacement);
+  }
+  return out;
 }
 
 function extractDeviceRequestIds(text) {
