@@ -33,6 +33,10 @@ RUN set -eux; \
     sed -i -E 's/"openclaw"[[:space:]]*:[[:space:]]*"workspace:[^"]+"/"openclaw": "*"/g' "$f"; \
   done
 
+# Disable pnpm's minimumReleaseAge gate for this build. Without this, fresh AWS SDK
+# (and other) releases <48h old block install whenever the lockfile needs refreshing.
+RUN sed -i -E 's/^minimumReleaseAge:.*/minimumReleaseAge: 0/' pnpm-workspace.yaml
+
 RUN pnpm install --no-frozen-lockfile
 RUN pnpm build
 ENV OPENCLAW_PREFER_PNPM=1
