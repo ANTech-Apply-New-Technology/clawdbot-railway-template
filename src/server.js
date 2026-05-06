@@ -143,6 +143,9 @@ let lastGatewayExit = null;
 let lastDoctorOutput = null;
 let lastDoctorAt = null;
 let lastGatewayFailAt = null;
+// One-shot guard for the boot-time `doctor --fix` self-repair. Reset to false
+// after the gateway successfully starts so a future failure can re-attempt.
+let doctorFixAttempted = false;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -231,6 +234,46 @@ async function runDoctorBestEffort() {
   }
 }
 
+// Back up the active config file with a timestamp suffix.
+// Returns the backup path on success, null if there's no config to back up
+// or the copy fails. Backups are kept indefinitely so users can restore
+// manually if anything goes wrong; they're tiny (config is plain JSON).
+function backupConfigFile() {
+  const cfg = configPath();
+  if (!cfg || !fs.existsSync(cfg)) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = `${cfg}.bak.${stamp}`;
+  try {
+    fs.copyFileSync(cfg, backup);
+    console.log(`[wrapper] backed up config → ${backup}`);
+    return backup;
+  } catch (err) {
+    console.error(`[wrapper] config backup failed: ${String(err)}`);
+    return null;
+  }
+}
+
+// Run `openclaw doctor --fix` after backing up the config. Used as a one-shot
+// self-repair when the gateway fails to start with an existing config — e.g.
+// after an OpenClaw version bump that renamed config keys or externalized
+// a previously bundled plugin. Never invoked without a successful backup.
+async function runDoctorFixWithBackup() {
+  const backup = backupConfigFile();
+  if (!backup) return { ok: false, reason: "no config to repair (or backup failed)" };
+
+  console.log("[wrapper] running `openclaw doctor --fix` to repair config...");
+  try {
+    const r = await runCmd(OPENCLAW_NODE, clawArgs(["doctor", "--fix"]));
+    const out = redactSecrets(r.output || "");
+    lastDoctorOutput = out.length > 50_000 ? out.slice(0, 50_000) + "\n... (truncated)\n" : out;
+    console.log(`[wrapper] doctor --fix exit=${r.code} (backup at ${backup})`);
+    return { ok: r.code === 0, backup };
+  } catch (err) {
+    console.error(`[wrapper] doctor --fix failed (config backup at ${backup}): ${String(err)}`);
+    return { ok: false, reason: String(err), backup };
+  }
+}
+
 async function ensureGatewayRunning() {
   if (!isConfigured()) return { ok: false, reason: "not configured" };
   if (gatewayProc) return { ok: true };
@@ -247,12 +290,48 @@ async function ensureGatewayRunning() {
         if (!ready) {
           throw new Error("Gateway did not become ready in time");
         }
+        // Successful start — reset the doctor-fix guard so a future failure
+        // (e.g. after another upstream version bump) can self-repair again.
+        doctorFixAttempted = false;
       } catch (err) {
         const msg = `[gateway] start failure: ${String(err)}`;
         lastGatewayError = msg;
-        lastGatewayFailAt = Date.now();
-        // Collect extra diagnostics to help users file issues.
+        // Collect read-only diagnostics first so users see what went wrong.
         await runDoctorBestEffort();
+
+        // One-shot self-repair: when an existing-config redeploy fails to start
+        // (e.g. after an OpenClaw version bump that renamed keys or externalized
+        // a plugin), back up the config and run `doctor --fix`, then retry once.
+        // Skip on fresh installs (no config) and on any boot we've already tried.
+        if (!doctorFixAttempted && isConfigured()) {
+          doctorFixAttempted = true;
+          const fix = await runDoctorFixWithBackup();
+          if (fix.ok) {
+            console.log("[wrapper] retrying gateway start after doctor --fix...");
+            // Clear any stale child proc reference before retry.
+            if (gatewayProc) {
+              try { gatewayProc.kill("SIGTERM"); } catch {}
+              gatewayProc = null;
+            }
+            try {
+              await startGateway();
+              const ready2 = await waitForGatewayReady({ timeoutMs: 30_000 });
+              if (ready2) {
+                console.log(`[wrapper] gateway recovered after doctor --fix (config backup: ${fix.backup})`);
+                lastGatewayError = null;
+                return;
+              }
+              throw new Error("Gateway did not become ready after doctor --fix");
+            } catch (err2) {
+              console.error(
+                `[wrapper] retry after doctor --fix also failed; original config preserved at ${fix.backup}: ${String(err2)}`,
+              );
+              lastGatewayError = `[gateway] retry failed: ${String(err2)}`;
+            }
+          }
+        }
+
+        lastGatewayFailAt = Date.now();
         throw err;
       }
     })().finally(() => {
@@ -1516,24 +1595,23 @@ const server = app.listen(PORT, "0.0.0.0", async () => {
   }
 
   // Ensure commands.bash is enabled (required for Discord exec to work without approvals).
-  {
-    const cfgPath = configPath();
-    if (cfgPath && fs.existsSync(cfgPath)) {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
-        let changed = false;
-        if (!cfg.commands) cfg.commands = {};
-        if (!cfg.commands.bash) {
-          cfg.commands.bash = true;
-          changed = true;
-        }
-        if (changed) {
-          fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
-          console.log("[wrapper] patched commands.bash=true in config");
-        }
-      } catch (err) {
-        console.warn(`[wrapper] failed to patch commands config: ${String(err)}`);
+  // Use `openclaw config set` rather than parsing/writing JSON ourselves: the
+  // editor surfaces the file as JSON5, and a future user-added comment would
+  // break a raw JSON.parse — silently skipping this patch and breaking Discord
+  // exec. Routing through the CLI uses the schema-aware writer.
+  if (isConfigured()) {
+    try {
+      const r = await runCmd(
+        OPENCLAW_NODE,
+        clawArgs(["config", "set", "--json", "commands.bash", "true"]),
+      );
+      if (r.code === 0) {
+        console.log("[wrapper] ensured commands.bash=true in config");
+      } else {
+        console.warn(`[wrapper] config set commands.bash exit=${r.code}: ${(r.output || "").slice(0, 500)}`);
       }
+    } catch (err) {
+      console.warn(`[wrapper] failed to set commands.bash: ${String(err)}`);
     }
   }
 
