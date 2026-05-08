@@ -28,6 +28,9 @@ WORKDIR /openclaw
 ARG OPENCLAW_GIT_REF=v2026.4.11
 RUN git clone --depth 1 --branch "${OPENCLAW_GIT_REF}" https://github.com/openclaw/openclaw.git .
 
+COPY scripts/patch-openclaw-user-errors.mjs /tmp/patch-openclaw-user-errors.mjs
+RUN node /tmp/patch-openclaw-user-errors.mjs /openclaw
+
 # Patch: relax version requirements for packages that may reference unpublished versions.
 # Apply to all extension package.json files to handle workspace protocol (workspace:*).
 RUN set -eux; \

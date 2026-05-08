@@ -6,8 +6,18 @@ function getRedactor() {
   const src = fs.readFileSync(new URL("../src/server.js", import.meta.url), "utf8");
   const m = src.match(/function redactSecrets\(text\) \{([\s\S]*?)\n\}/);
   assert.ok(m, "redactSecrets not found");
+  const sanitizer = JSON.parse(
+    fs.readFileSync(new URL("../src/sanitizer.json", import.meta.url), "utf8"),
+  );
+  const SECRET_PATTERNS = (sanitizer.secret_patterns || []).map((p) => ({
+    re: new RegExp(p.pattern, "g"),
+    replacement: p.replacement || "[REDACTED]",
+  }));
   // eslint-disable-next-line no-new-func
-  return new Function("return function redactSecrets(text){" + m[1] + "\n}" )();
+  return new Function(
+    "SECRET_PATTERNS",
+    "return function redactSecrets(text){" + m[1] + "\n}",
+  )(SECRET_PATTERNS);
 }
 
 test("redactSecrets redacts Telegram bot tokens", () => {
