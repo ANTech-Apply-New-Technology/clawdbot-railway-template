@@ -875,17 +875,54 @@ app.post("/setup/api/run", requireSetupAuth, async (req, res) => {
       const proxyKey = (payload.authSecret || "").trim();
       if (proxyUrl && proxyKey) {
         const baseUrl = proxyUrl.replace(/\/+$/, "") + "/v1";
+
+        // Discover models from the proxy's /v1/models endpoint instead of hardcoding.
+        // Without this the picker drifts whenever ANT-Proxy adds a model (e.g. Opus 4.7).
+        // ANT_PROXY_MODELS_FILTER (Railway var) selects the upstream filter:
+        //   "all" (default), "anthropic", "openai", "gemini", or "qwen".
+        const allowedFilters = new Set(["all", "anthropic", "openai", "gemini", "qwen"]);
+        const rawFilter = (process.env.ANT_PROXY_MODELS_FILTER || "all").trim().toLowerCase();
+        const filter = allowedFilters.has(rawFilter) ? rawFilter : "all";
+        if (rawFilter !== filter) {
+          extra += `\n[ant-proxy] ignored invalid ANT_PROXY_MODELS_FILTER=${rawFilter} — using "all"`;
+        }
+
+        let models;
+        try {
+          const r = await fetch(`${baseUrl}/models?provider=${filter}`, {
+            headers: { Authorization: `Bearer ${proxyKey}` },
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const body = await r.json();
+          const items = Array.isArray(body?.data) ? body.data : [];
+          const mapped = items
+            .filter((m) => m && typeof m.id === "string")
+            .map((m) => ({ id: m.id, name: m.display_name || m.id }));
+          if (mapped.length > 0) {
+            models = mapped;
+            extra += `\n[ant-proxy] discovered ${mapped.length} models from /v1/models?provider=${filter}`;
+          } else {
+            extra += `\n[ant-proxy] /v1/models returned no items — using fallback list`;
+          }
+        } catch (err) {
+          extra += `\n[ant-proxy] /v1/models fetch failed: ${err?.message || err} — using fallback list`;
+        }
+
+        if (!models) {
+          models = [
+            { id: "claude-opus-4-7", name: "Claude Opus 4.7" },
+            { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+            { id: "claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+            { id: "gpt-5.4", name: "GPT-5.4" },
+            { id: "o4-mini", name: "OpenAI o4-mini" },
+          ];
+        }
+
         const providerCfg = {
           baseUrl,
           api: "openai-completions",
           apiKey: "${ANT_PROXY_API_KEY}",
-          models: [
-            { id: "claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
-            { id: "claude-opus-4-20250514", name: "Claude Opus 4" },
-            { id: "o4-mini", name: "OpenAI o4-mini" },
-            { id: "gpt-4.1", name: "GPT-4.1" },
-            { id: "codex-mini-latest", name: "Codex Mini" },
-          ],
+          models,
         };
 
         // The config references ${ANT_PROXY_API_KEY} which OpenClaw resolves at runtime.
