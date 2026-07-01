@@ -277,6 +277,14 @@ async function runDoctorFixWithBackup() {
 async function ensureGatewayRunning() {
   if (!isConfigured()) return { ok: false, reason: "not configured" };
   if (gatewayProc) return { ok: true };
+  // Adopt an already-listening gateway instead of spawning a duplicate.
+  // The wrapper only tracks the gateway via the in-memory `gatewayProc` handle,
+  // so a live-but-untracked gateway — e.g. one orphaned by a prior restart race
+  // or the doctor --fix retry below — would otherwise make every request spawn a
+  // fresh gateway that dies with EADDRINUSE and, during its brief startup,
+  // contends for plugin SQLite locks (the "database is locked" churn). If the
+  // internal port is already serving, treat the gateway as up and don't spawn.
+  if (await probeGateway()) return { ok: true, adopted: true };
   // Cooldown: don't retry for 15s after a failure to prevent request-stampede crash loops.
   if (lastGatewayFailAt && Date.now() - lastGatewayFailAt < 15_000) {
     return { ok: false, reason: "cooling down after recent failure" };
