@@ -50,10 +50,24 @@ function replaceOnce(content, from, to, label) {
   return { content: content.replace(from, to), changed: true };
 }
 
+// OpenClaw >= 2026.5.x replaced buildExternalRunFailureText with native
+// model-exhaustion surfacing (buildRateLimitCooldownMessage: billing, rate-limit
+// cooldown, usage-limit messages) — the behavior this patch used to add.
+const UPSTREAM_NATIVE_MARKER = "function buildRateLimitCooldownMessage(";
+
 export function patchOpenClawUserErrors(rootDir) {
   const targetPath = path.join(rootDir, TARGET_FILE);
   let content = fs.readFileSync(targetPath, "utf8");
   let changed = false;
+
+  if (!content.includes("buildExternalRunFailureText")) {
+    if (content.includes(UPSTREAM_NATIVE_MARKER)) {
+      return { changedFiles: 0, targetPath, skipped: "upstream-native" };
+    }
+    throw new Error(
+      "buildExternalRunFailureText is gone but no native replacement found — inspect the new OpenClaw error-surfacing code before building",
+    );
+  }
 
   const signature = replaceOnce(
     content,
@@ -92,9 +106,12 @@ export function patchOpenClawUserErrors(rootDir) {
 function main() {
   const rootDir = process.argv[2] || process.cwd();
   const result = patchOpenClawUserErrors(rootDir);
-  console.log(
-    `[patch-openclaw-user-errors] ${result.changedFiles ? "patched" : "already patched"} ${result.targetPath}`,
-  );
+  const state = result.skipped
+    ? `skipped (${result.skipped})`
+    : result.changedFiles
+      ? "patched"
+      : "already patched";
+  console.log(`[patch-openclaw-user-errors] ${state} ${result.targetPath}`);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
