@@ -22,10 +22,14 @@ WORKDIR /openclaw
 
 # Pin to a known-good ref (tag/branch). Override in Railway template settings if needed.
 # Using a released tag avoids build breakage when `main` temporarily references unpublished packages.
-# Reverted from v2026.5.4 to v2026.4.11 — the bump correlated with persistent gateway
-# event-loop saturation and Discord post duplication regressions on live deploys. Re-bump
-# only after upstream confirms a fix or after measurement on a staging deploy.
-ARG OPENCLAW_GIT_REF=v2026.4.11
+# 2026-07-02: bumped v2026.4.11 -> v2026.5.28 (minimum for lossless-claw >=0.10). The May
+# "v2026.5.4 regression" (event-loop saturation + Discord reply duplication) was traced to
+# other causes, both since fixed: lossless-claw doing blocking SQLite on a 996MB lcm.db plus
+# million-token paperclip sessions (saturation), and the wrapper duplicate-gateway bug
+# fixed in 22b1656 (duplicated replies). Details:
+# ANT/ANT-ssh-sigge/STATUS-2026-07-01-sigge-ephemeral-storage-crash.md. Next step after a
+# clean 24h soak: v2026.6.11.
+ARG OPENCLAW_GIT_REF=v2026.5.28
 RUN git clone --depth 1 --branch "${OPENCLAW_GIT_REF}" https://github.com/openclaw/openclaw.git .
 
 COPY scripts/patch-openclaw-user-errors.mjs /tmp/patch-openclaw-user-errors.mjs
